@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>本地知识库问答</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        margin: 0;
+        background: #f5f7fb;
+        color: #111827;
+      }
+      .container {
+        max-width: 900px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+      .card {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 24px;
+      }
+      button {
+        border: 0;
+        background: #2563eb;
+        color: #fff;
+        padding: 10px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button:disabled {
+        background: #93c5fd;
+        cursor: not-allowed;
+      }
+      textarea, input {
+        width: 100%;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 120px;
+        gap: 10px;
+      }
+      .answer {
+        white-space: pre-wrap;
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 12px;
+        min-height: 80px;
+      }
+      .muted {
+        color: #6b7280;
+      }
+      .refs li {
+        margin-bottom: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <h1>本地知识库智能问答</h1>
+        <p class="muted">先执行一次索引，再开始提问。</p>
+        <label style="display:block; margin-bottom: 10px;" class="muted">
+          <input id="rebuild" type="checkbox" checked />
+          重建索引（清空旧索引后重建）
+        </label>
+        <button id="ingestBtn">构建/刷新索引</button>
+        <p id="ingestStatus" class="muted"></p>
+      </div>
+
+      <div class="card">
+        <label for="question">问题</label>
+        <textarea id="question" rows="4" placeholder="例如：这个系统的核心流程是什么？"></textarea>
+        <div class="row" style="margin-top: 10px;">
+          <input id="topk" type="number" min="1" max="20" value="4" />
+          <button id="askBtn">提问</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>回答</h3>
+        <div id="answer" class="answer">等待提问...</div>
+        <h4>引用来源</h4>
+        <ul id="refs" class="refs"></ul>
+      </div>
+    </div>
+
+    <script>
+      const ingestBtn = document.getElementById("ingestBtn");
+      const ingestStatus = document.getElementById("ingestStatus");
+      const rebuild = document.getElementById("rebuild");
+      const askBtn = document.getElementById("askBtn");
+      const question = document.getElementById("question");
+      const topk = document.getElementById("topk");
+      const answer = document.getElementById("answer");
+      const refs = document.getElementById("refs");
+
+      ingestBtn.addEventListener("click", async () => {
+        ingestBtn.disabled = true;
+        ingestStatus.textContent = "正在构建索引...";
+        try {
+          const res = await fetch("/ingest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rebuild: Boolean(rebuild.checked) })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || "索引失败");
+          ingestStatus.textContent = `完成：处理文件 ${data.files_processed}，写入分块 ${data.chunks_added}`;
+        } catch (err) {
+          ingestStatus.textContent = `失败：${err.message}`;
+        } finally {
+          ingestBtn.disabled = false;
+        }
+      });
+
+      askBtn.addEventListener("click", async () => {
+        const q = question.value.trim();
+        if (!q) {
+          answer.textContent = "请先输入问题。";
+          return;
+        }
+        askBtn.disabled = true;
+        answer.textContent = "生成中...";
+        refs.innerHTML = "";
+        try {
+          const res = await fetch("/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question: q, top_k: Number(topk.value || 4) })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || "问答失败");
+          answer.textContent = data.answer || "(无回答)";
+          (data.references || []).forEach((r) => {
+            const li = document.createElement("li");
+            li.textContent = r;
+            refs.appendChild(li);
+          });
+        } catch (err) {
+          answer.textContent = `失败：${err.message}`;
+        } finally {
+          askBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

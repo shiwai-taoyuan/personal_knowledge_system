@@ -1,0 +1,36 @@
+# macOS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Local generated artifacts
+data/index/
+data/docs/*.pdf
+data/docs/*.doc
+data/docs/*.docx
+data/docs/*.xls
+data/docs/*.xlsx
+
+# Logs / temp
+*.log
+tmp/
+temp/

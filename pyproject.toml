@@ -1,0 +1,31 @@
+[project]
+name = "local-rag-qa"
+version = "0.1.0"
+description = "Local vector knowledge base RAG QA system"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "numpy>=1.26.0",
+  "openai>=1.40.0",
+  "pydantic-settings>=2.3.0",
+  "python-dotenv>=1.0.1",
+  "pypdf>=5.0.0",
+  "sentence-transformers>=3.0.1",
+  "transformers>=4.44.0",
+  "torch>=2.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -182,10 +182,10 @@ class TestRAGService(unittest.TestCase):
                 chat_fn=lambda _, __: "ok",
             )
             text = "\n".join(
-                ["刘伟 370784199801271311"] * 20 + ["有效条款：员工离职需办理交接。"]
+                ["测试用户 [ID_PLACEHOLDER]"] * 20 + ["有效条款：员工离职需办理交接。"]
             )
             compressed = service._compress_repeated_lines(text)
-            self.assertEqual(compressed.count("刘伟 370784199801271311"), 1)
+            self.assertEqual(compressed.count("测试用户 [ID_PLACEHOLDER]"), 1)
 
     def test_near_duplicate_chunks_are_filtered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -201,10 +201,26 @@ class TestRAGService(unittest.TestCase):
                 embedding_fn=lambda texts: [[1.0, 0.0] for _ in texts],
                 chat_fn=lambda _, __: "ok",
             )
-            text = ("刘伟 370784199801271311\n" * 40).strip()
+            text = ("测试用户 [ID_PLACEHOLDER]\n" * 40).strip()
             raw = service._fixed_window_split(text)
             chunks = service.chunk_text(text)
             self.assertLess(len(chunks), len(raw))
+
+    def test_sensitive_info_is_masked_before_chunking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Settings(vector_index_dir=str(Path(tmp) / "index"))
+            service = RAGService(
+                settings=settings,
+                vector_store=LocalVectorStore(settings.vector_index_dir),
+                embedding_fn=lambda texts: [[1.0, 0.0] for _ in texts],
+                chat_fn=lambda _, __: "ok",
+            )
+            text = "员工证件 370784199801271311，联系电话 13812345678。"
+            chunks = service.chunk_text(text)
+            self.assertTrue(chunks)
+            merged = "\n".join(chunks)
+            self.assertIn("[ID_REDACTED]", merged)
+            self.assertIn("[PHONE_REDACTED]", merged)
 
 
 if __name__ == "__main__":

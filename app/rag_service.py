@@ -178,6 +178,14 @@ class RAGService:
         return text.strip()
 
     @staticmethod
+    def _mask_sensitive_text(text: str) -> str:
+        # 脱敏身份证号（15/18位，末位可X），避免私有信息入库。
+        text = re.sub(r"\b\d{15}(?:\d{2}[0-9Xx])?\b", "[ID_REDACTED]", text)
+        # 脱敏中国大陆手机号。
+        text = re.sub(r"\b1[3-9]\d{9}\b", "[PHONE_REDACTED]", text)
+        return text
+
+    @staticmethod
     def _split_sentences(text: str) -> list[str]:
         pieces = re.split(r"(?<=[。！？.!?；;])", text)
         return [p.strip() for p in pieces if p.strip()]
@@ -207,6 +215,7 @@ class RAGService:
 
     def chunk_text(self, text: str) -> list[str]:
         text = self._normalize_text(text)
+        text = self._mask_sensitive_text(text)
         if not text:
             return []
 
@@ -351,6 +360,8 @@ class RAGService:
             min_score=self.settings.retrieval_score_threshold,
         )
         retrieved = self._rerank_and_select(question, candidates, k)
+        if not retrieved:
+            return "知识库中未找到足够依据，暂时无法确定答案。", []
 
         context = self._build_context(retrieved, self.settings.max_context_chars)
         system_prompt = (

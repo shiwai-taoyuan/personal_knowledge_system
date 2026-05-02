@@ -9,9 +9,9 @@ class Settings(BaseSettings):
     openai_base_url: Optional[str] = None
     chat_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
-    checkpoints_dir: str = "/Users/wei/Documents/code/checkpoints"
-    bge_model_path: str = "/Users/wei/Documents/code/checkpoints/bge-small-zh-v1d5"
-    qwen_model_path: str = "/Users/wei/Documents/code/checkpoints/Qwen3-0d6B"
+    checkpoints_dir: str = "checkpoints"
+    bge_model_path: str = "checkpoints/bge-small-zh-v1d5"
+    qwen_model_path: str = "checkpoints/Qwen3-0d6B"
     embedding_provider: str = "local_bge"
     chat_provider: str = "local_qwen"
     vector_index_dir: str = "data/index"

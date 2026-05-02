@@ -34,3 +34,5 @@ data/docs/*.xlsx
 *.log
 tmp/
 temp/
+tests/.tmp_vector/
+tests/.tmp_vector_clear/

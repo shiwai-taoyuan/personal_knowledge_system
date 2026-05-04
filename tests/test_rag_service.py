@@ -222,6 +222,33 @@ class TestRAGService(unittest.TestCase):
             self.assertIn("[ID_REDACTED]", merged)
             self.assertIn("[PHONE_REDACTED]", merged)
 
+    def test_sentence_transformer_reranker_degrades_gracefully(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            docs_dir = tmp_path / "docs"
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            (docs_dir / "hr.md").write_text(
+                "公司请假制度：员工请假需要在OA系统提交审批。",
+                encoding="utf-8",
+            )
+
+            settings = Settings(
+                docs_dir=str(docs_dir),
+                vector_index_dir=str(tmp_path / "index"),
+                reranker_type="sentence_transformer",
+                reranker_model="BAAI/bge-reranker-base",
+            )
+            service = RAGService(
+                settings=settings,
+                embedding_fn=fake_embed,
+                chat_fn=fake_chat,
+            )
+            service.ingest_directory(rebuild=True)
+            answer, refs = service.ask("请假怎么做", top_k=1)
+
+            self.assertIn("OA系统提交审批", answer)
+            self.assertEqual(len(refs), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

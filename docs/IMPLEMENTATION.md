@@ -3,11 +3,14 @@
 ## 变更内容
 
 - 新增本地 RAG 智能问答服务，支持文档入库与问答 API。
-- 新增本地向量索引持久化（`vectors.npy + metadata.json`）。
+- 新增本地向量索引持久化（迁移后由 LlamaIndex 管理持久化文件）。
 - 新增可测试的服务层设计（支持注入 embedding/chat 函数）。
 - 默认启用本地模型：BGE 向量化 + Qwen 问答生成。
 - 切分策略升级为段落优先 + 句子回退，支持小分片合并和去重。
 - 检索链路升级为候选召回、阈值过滤、词重排和来源去重。
+- 迁移到 LlamaIndex 索引/检索链路，保留 `/ask` 响应结构不变。
+- ingest 链路改为使用 LlamaIndex 持久化索引目录（`VECTOR_INDEX_DIR`）。
+- rerank 升级为可插拔 postprocessor：`similarity`（默认）或 `sentence_transformer`（可选）。
 
 ## 接口说明
 

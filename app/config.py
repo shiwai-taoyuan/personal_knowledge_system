@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     default_top_k: int = 4
     retrieval_candidate_k: int = 12
     retrieval_score_threshold: float = 0.2
-    rerank_alpha: float = 0.75
+    reranker_type: str = "similarity"
+    reranker_model: str = "BAAI/bge-reranker-base"
     max_per_source: int = 2
     max_context_chars: int = 4000
     temperature: float = 0.2

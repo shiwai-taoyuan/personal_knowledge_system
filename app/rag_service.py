@@ -8,27 +8,59 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from llama_index.core import (
+    Document,
+    QueryBundle,
+    StorageContext,
+    VectorStoreIndex,
+    load_index_from_storage,
+)
+from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.core.postprocessor import SimilarityPostprocessor
+from pydantic import PrivateAttr
+
 from app.config import Settings
-from app.vector_store import EmbeddingFn, LocalVectorStore, RetrievalResult
+from app.vector_store import EmbeddingFn, RetrievalResult
 
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf"}
+
+
+class CallableEmbedding(BaseEmbedding):
+    model_name: str = "callable-embedding"
+    _embed_fn: EmbeddingFn = PrivateAttr()
+
+    def __init__(self, embed_fn: EmbeddingFn, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._embed_fn = embed_fn
+
+    def _get_query_embedding(self, query: str) -> list[float]:
+        return self._embed_fn([query])[0]
+
+    async def _aget_query_embedding(self, query: str) -> list[float]:
+        return self._get_query_embedding(query)
+
+    def _get_text_embedding(self, text: str) -> list[float]:
+        return self._embed_fn([text])[0]
 
 
 class RAGService:
     def __init__(
         self,
         settings: Settings,
-        vector_store: Optional[LocalVectorStore] = None,
+        vector_store: Optional[Any] = None,
         embedding_fn: Optional[EmbeddingFn] = None,
         chat_fn: Optional[Callable[[str, str], str]] = None,
     ) -> None:
         self.settings = settings
-        self.vector_store = vector_store or LocalVectorStore(settings.vector_index_dir)
+        # 兼容旧测试参数，LlamaIndex 迁移后不再使用自定义 vector_store。
+        self.vector_store = vector_store
         self._embedding_fn = embedding_fn
         self._chat_fn = chat_fn
         self._client = None
         self._bge_model: Any = None
         self._qwen_generator: Any = None
+        self._storage_dir = Path(self.settings.vector_index_dir)
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
 
         needs_openai = (
             (self._embedding_fn is None and settings.embedding_provider == "openai")
@@ -91,6 +123,43 @@ class RAGService:
             input=texts,
         )
         return [item.embedding for item in response.data]
+
+    def _get_llama_embedding(self) -> BaseEmbedding:
+        return CallableEmbedding(self._embed)
+
+    def _load_index(self) -> Optional[VectorStoreIndex]:
+        if not any(self._storage_dir.iterdir()):
+            return None
+        try:
+            storage_context = StorageContext.from_defaults(
+                persist_dir=str(self._storage_dir)
+            )
+            return load_index_from_storage(
+                storage_context=storage_context,
+                embed_model=self._get_llama_embedding(),
+            )
+        except Exception:
+            return None
+
+    def _get_postprocessors(self, top_k: int) -> list[Any]:
+        processors: list[Any] = [
+            SimilarityPostprocessor(similarity_cutoff=self.settings.retrieval_score_threshold)
+        ]
+        reranker_type = self.settings.reranker_type.lower().strip()
+        if reranker_type == "sentence_transformer":
+            try:
+                from llama_index.postprocessor.sbert_rerank import SentenceTransformerRerank
+
+                processors.append(
+                    SentenceTransformerRerank(
+                        top_n=top_k,
+                        model=self.settings.reranker_model,
+                    )
+                )
+            except Exception:
+                # 降级到仅使用相似度后处理，保证链路可用。
+                pass
+        return processors
 
     def _chat(self, system_prompt: str, user_prompt: str) -> str:
         if self._chat_fn is not None:
@@ -320,6 +389,15 @@ class RAGService:
             return self._read_pdf_text(file)
         return ""
 
+    def _clear_storage_dir(self) -> None:
+        if not self._storage_dir.exists():
+            return
+        for path in sorted(self._storage_dir.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+
     def ingest_directory(
         self,
         directory: Optional[str] = None,
@@ -330,10 +408,10 @@ class RAGService:
             raise FileNotFoundError(f"文档目录不存在: {target}")
         do_rebuild = self.settings.ingest_rebuild_default if rebuild is None else rebuild
         if do_rebuild:
-            self.vector_store.clear()
+            self._clear_storage_dir()
+            self._storage_dir.mkdir(parents=True, exist_ok=True)
 
-        all_chunks: list[str] = []
-        sources: list[str] = []
+        documents: list[Document] = []
         files_processed = 0
 
         for file in sorted(target.rglob("*")):
@@ -343,25 +421,50 @@ class RAGService:
             chunks = self.chunk_text(content)
             if not chunks:
                 continue
-            all_chunks.extend(chunks)
-            sources.extend([str(file)] * len(chunks))
+            for chunk in chunks:
+                documents.append(
+                    Document(
+                        text=chunk,
+                        metadata={"source": str(file)},
+                    )
+                )
             files_processed += 1
 
-        chunks_added = self.vector_store.add_texts(all_chunks, sources, self._embed)
-        return files_processed, chunks_added
+        if not documents:
+            return files_processed, 0
+
+        index = self._load_index() if not do_rebuild else None
+        if index is None:
+            index = VectorStoreIndex.from_documents(
+                documents=documents,
+                embed_model=self._get_llama_embedding(),
+            )
+        else:
+            for doc in documents:
+                index.insert(doc)
+        index.storage_context.persist(persist_dir=str(self._storage_dir))
+        return files_processed, len(documents)
 
     def ask(self, question: str, top_k: Optional[int] = None) -> tuple[str, list[str]]:
         k = top_k or self.settings.default_top_k
-        candidates = self.vector_store.search(
-            query=question,
-            top_k=k,
-            embedding_fn=self._embed,
-            candidate_k=max(k, self.settings.retrieval_candidate_k),
-            min_score=self.settings.retrieval_score_threshold,
+        index = self._load_index()
+        # if index is None:
+        #     return "知识库中未找到足够依据，暂时无法确定答案。", []
+
+        retriever = index.as_retriever(
+            similarity_top_k=max(k, self.settings.retrieval_candidate_k)
         )
-        retrieved = self._rerank_and_select(question, candidates, k)
-        if not retrieved:
-            return "知识库中未找到足够依据，暂时无法确定答案。", []
+        node_results = retriever.retrieve(question)
+        query_bundle = QueryBundle(question)
+        for processor in self._get_postprocessors(k):
+            node_results = self._run_postprocessor(
+                processor=processor,
+                node_results=node_results,
+                query_bundle=query_bundle,
+            )
+        retrieved = self._dedupe_and_limit(node_results, k)
+        # if not retrieved:
+        #     return "知识库中未找到足够依据，暂时无法确定答案。", []
 
         context = self._build_context(retrieved, self.settings.max_context_chars)
         system_prompt = (
@@ -375,6 +478,27 @@ class RAGService:
         answer = self._chat(system_prompt, user_prompt).strip()
         references = self._extract_references(retrieved)
         return answer, references
+
+    @staticmethod
+    def _run_postprocessor(
+        processor: Any,
+        node_results: list[Any],
+        query_bundle: QueryBundle,
+    ) -> list[Any]:
+        # LlamaIndex 在不同版本中参数名存在差异，优先使用位置参数保证兼容。
+        try:
+            return processor.postprocess_nodes(node_results, query_bundle=query_bundle)
+        except TypeError as exc:
+            message = str(exc)
+            if "unexpected keyword argument" not in message:
+                raise
+        try:
+            return processor.postprocess_nodes(nodes=node_results, query_bundle=query_bundle)
+        except TypeError as exc:
+            message = str(exc)
+            if "unexpected keyword argument" not in message:
+                raise
+        return processor.postprocess_nodes(node_results)
 
     @staticmethod
     def _build_context(retrieved: list[RetrievalResult], max_chars: int) -> str:
@@ -392,49 +516,28 @@ class RAGService:
             used_chars += len(block)
         return "\n\n".join(rows)
 
-    @staticmethod
-    def _tokenize(text: str) -> set[str]:
-        text = text.lower()
-        tokens = re.findall(r"[\u4e00-\u9fff]{1,}|[a-z0-9_]{2,}", text)
-        return set(tokens)
-
-    def _rerank_and_select(
-        self,
-        question: str,
-        candidates: list[RetrievalResult],
-        top_k: int,
-    ) -> list[RetrievalResult]:
-        if not candidates:
-            return []
-        q_tokens = self._tokenize(question)
-
-        scored: list[tuple[float, RetrievalResult]] = []
-        for item in candidates:
-            c_tokens = self._tokenize(item.text)
-            overlap = 0.0
-            if q_tokens:
-                overlap = len(q_tokens & c_tokens) / max(1, len(q_tokens))
-            final_score = (
-                self.settings.rerank_alpha * item.score
-                + (1.0 - self.settings.rerank_alpha) * overlap
-            )
-            scored.append((final_score, item))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
+    def _dedupe_and_limit(self, node_results: list[Any], top_k: int) -> list[RetrievalResult]:
         selected: list[RetrievalResult] = []
         source_count: dict[str, int] = {}
         seen_signature: set[str] = set()
 
-        for _, item in scored:
-            signature = re.sub(r"\s+", " ", item.text)[:180]
+        for node in node_results:
+            text = node.node.get_content().strip()
+            if not text:
+                continue
+            score = float(node.score or 0.0)
+            if score < self.settings.retrieval_score_threshold:
+                continue
+            source = str(node.node.metadata.get("source", "unknown"))
+            signature = re.sub(r"\s+", " ", text)[:180]
             if signature in seen_signature:
                 continue
-            count = source_count.get(item.source, 0)
+            count = source_count.get(source, 0)
             if count >= self.settings.max_per_source:
                 continue
-            selected.append(item)
+            selected.append(RetrievalResult(text=text, source=source, score=score))
             seen_signature.add(signature)
-            source_count[item.source] = count + 1
+            source_count[source] = count + 1
             if len(selected) >= top_k:
                 break
 
